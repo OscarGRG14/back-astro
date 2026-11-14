@@ -1,0 +1,216 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "AstroHealth API — NASA Space Apps Challenge",
+    "version": "1.0.0",
+    "description": "Backend de monitoreo de salud para astronautas en misiones espaciales. Signos vitales (ESP32/manual), ambiente de cabina, registros de bienestar, motor de alertas e insights con IA."
+  },
+  "servers": [{ "url": "http://localhost:3000/api/v1" }],
+  "tags": [
+    { "name": "Auth" }, { "name": "Devices" }, { "name": "Ingest" },
+    { "name": "Metrics" }, { "name": "Records" }, { "name": "Alerts" },
+    { "name": "Insights" }, { "name": "Dashboard" }, { "name": "Users" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" },
+      "deviceKey": { "type": "apiKey", "in": "header", "name": "x-api-key" },
+      "deviceId": { "type": "apiKey", "in": "header", "name": "x-device-id" }
+    },
+    "schemas": {
+      "Reading": {
+        "type": "object", "required": ["type", "value"],
+        "properties": {
+          "type": { "type": "string", "example": "heart_rate", "description": "Ver catálogo en /api/docs o metric-types.config" },
+          "value": { "type": "number", "example": 78 },
+          "ts": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Error": { "type": "object", "properties": { "message": { "type": "string" } } }
+    }
+  },
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth"], "summary": "Iniciar sesión",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["email", "password"],
+          "properties": { "email": { "type": "string" }, "password": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "JWT + usuario" }, "401": { "description": "Credenciales inválidas" } }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": ["Auth"], "summary": "Crear usuario (solo admin)", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["nombre", "apellido", "email", "password"],
+          "properties": {
+            "nombre": { "type": "string" }, "apellido": { "type": "string" },
+            "email": { "type": "string" }, "password": { "type": "string" },
+            "role": { "type": "string", "enum": ["astronaut", "medic", "admin"] },
+            "missionId": { "type": "string" },
+            "perfil": { "type": "object" }, "baseline": { "type": "object" } } } } } },
+        "responses": { "201": { "description": "Usuario creado" } }
+      }
+    },
+    "/auth/me": {
+      "get": { "tags": ["Auth"], "summary": "Usuario actual", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Perfil del usuario autenticado" } } }
+    },
+    "/devices": {
+      "post": {
+        "tags": ["Devices"], "summary": "Registrar ESP32 (admin). Devuelve apiKey una sola vez.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["deviceId", "kind"],
+          "properties": {
+            "deviceId": { "type": "string", "example": "esp32-01" },
+            "kind": { "type": "string", "enum": ["wearable", "environment"] },
+            "assignedTo": { "type": "string", "description": "ObjectId del astronauta (requerido si wearable)" },
+            "sensors": { "type": "array", "items": { "type": "string" } } } } } } },
+        "responses": { "201": { "description": "Dispositivo + apiKey" } }
+      },
+      "get": { "tags": ["Devices"], "summary": "Listar dispositivos de la misión", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Lista de dispositivos" } } }
+    },
+    "/ingest": {
+      "post": {
+        "tags": ["Ingest"], "summary": "Ingesta de lecturas del ESP32 (batch)",
+        "security": [{ "deviceKey": [] }, { "deviceId": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["readings"],
+          "properties": { "readings": { "type": "array", "items": { "$ref": "#/components/schemas/Reading" } } },
+          "example": { "readings": [
+            { "type": "heart_rate", "value": 78 },
+            { "type": "spo2", "value": 96 },
+            { "type": "co2", "value": 800 } ] } } } } },
+        "responses": { "201": { "description": "{accepted, rejected}" }, "401": { "description": "Dispositivo no autorizado" } }
+      }
+    },
+    "/metrics": {
+      "post": {
+        "tags": ["Metrics"], "summary": "Registrar signo vital manualmente", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["type", "value"],
+          "properties": {
+            "type": { "type": "string", "example": "spo2" }, "value": { "type": "number" },
+            "recordedAt": { "type": "string", "format": "date-time" },
+            "astronautId": { "type": "string", "description": "solo medic/admin" } } } } } },
+        "responses": { "201": { "description": "Métrica creada (dispara evaluación de alertas)" } }
+      },
+      "get": {
+        "tags": ["Metrics"], "summary": "Historial de métricas", "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "type", "in": "query", "schema": { "type": "string" } },
+          { "name": "scope", "in": "query", "schema": { "type": "string", "enum": ["vital", "environment"] } },
+          { "name": "from", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "astronautId", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 200 } }
+        ],
+        "responses": { "200": { "description": "Lista de métricas (más recientes primero)" } }
+      }
+    },
+    "/metrics/latest": {
+      "get": { "tags": ["Metrics"], "summary": "Último valor por tipo de métrica", "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "scope", "in": "query", "schema": { "type": "string", "enum": ["vital", "environment"] } },
+          { "name": "astronautId", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Últimas lecturas agrupadas por tipo" } } }
+    },
+    "/records/sleep": {
+      "post": { "tags": ["Records"], "summary": "Registrar sueño", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["date", "durationMinutes"],
+          "properties": { "date": { "type": "string", "format": "date" }, "durationMinutes": { "type": "number" },
+            "quality": { "type": "number", "minimum": 1, "maximum": 5 }, "awakenings": { "type": "number" }, "notes": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Registro creado" } } },
+      "get": { "tags": ["Records"], "summary": "Historial de sueño", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Registros de sueño" } } }
+    },
+    "/records/exercise": {
+      "post": { "tags": ["Records"], "summary": "Registrar ejercicio contramedida", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["date", "exerciseType", "durationMinutes"],
+          "properties": { "date": { "type": "string", "format": "date" },
+            "exerciseType": { "type": "string", "enum": ["resistencia", "aerobico", "fuerza", "movilidad", "otro"] },
+            "durationMinutes": { "type": "number" },
+            "intensity": { "type": "string", "enum": ["baja", "moderada", "alta"] }, "notes": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Registro creado" } } },
+      "get": { "tags": ["Records"], "summary": "Historial de ejercicio", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Registros de ejercicio" } } }
+    },
+    "/records/mood": {
+      "post": { "tags": ["Records"], "summary": "Enviar cuestionario de salud conductual", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["instrument", "score"],
+          "properties": { "instrument": { "type": "string", "enum": ["PHQ9", "GAD7", "PSS", "CUSTOM"] },
+            "score": { "type": "number" }, "answers": { "type": "array", "items": { "type": "number" } },
+            "notes": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Evaluado contra umbrales clínicos (puede generar alerta)" } } },
+      "get": { "tags": ["Records"], "summary": "Historial de cuestionarios", "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "instrument", "in": "query", "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Cuestionarios" } } }
+    },
+    "/records/symptoms": {
+      "post": { "tags": ["Records"], "summary": "Reportar síntoma", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["description"],
+          "properties": { "description": { "type": "string" },
+            "category": { "type": "string", "enum": ["fisico", "conductual", "sueno", "otro"] },
+            "severity": { "type": "number", "minimum": 1, "maximum": 10 }, "bodyArea": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Síntoma registrado" } } },
+      "get": { "tags": ["Records"], "summary": "Historial de síntomas", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Síntomas" } } }
+    },
+    "/alerts": {
+      "get": { "tags": ["Alerts"], "summary": "Alertas activas", "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "severity", "in": "query", "schema": { "type": "string", "enum": ["info", "warning", "critical"] } },
+          { "name": "astronautId", "in": "query", "schema": { "type": "string" } },
+          { "name": "includeResolved", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": { "200": { "description": "Alertas activas ordenadas por severidad" } } }
+    },
+    "/alerts/{id}/acknowledge": {
+      "patch": { "tags": ["Alerts"], "summary": "Reconocer alerta", "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Alerta reconocida" } } }
+    },
+    "/alerts/{id}/resolve": {
+      "patch": { "tags": ["Alerts"], "summary": "Resolver alerta", "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Alerta resuelta" } } }
+    },
+    "/insights/daily": {
+      "get": { "tags": ["Insights"], "summary": "Insight de salud del día (IA Gemini)", "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "astronautId", "in": "query", "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "{insight, cached}" }, "503": { "description": "Gemini no configurado" } } }
+    },
+    "/insights/generate": {
+      "post": { "tags": ["Insights"], "summary": "Forzar regeneración del insight", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "content": { "application/json": { "schema": {
+          "type": "object", "properties": { "astronautId": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Insight recién generado" } } }
+    },
+    "/dashboard/summary": {
+      "get": { "tags": ["Dashboard"], "summary": "Resumen completo: health score, vitales, alertas, bienestar", "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "astronautId", "in": "query", "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Resumen del astronauta" } } }
+    },
+    "/dashboard/crew": {
+      "get": { "tags": ["Dashboard"], "summary": "Vista de control de misión (toda la tripulación)", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Resumen por astronauta" } } }
+    },
+    "/users/astronauts": {
+      "get": { "tags": ["Users"], "summary": "Listar astronautas de la misión (medic/admin)", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Tripulación" } } }
+    },
+    "/users/{id}": {
+      "get": { "tags": ["Users"], "summary": "Perfil de usuario", "security": [{ "bearerAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Usuario" }, "404": { "description": "No encontrado" } } }
+    }
+  }
+}
